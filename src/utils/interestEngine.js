@@ -225,6 +225,7 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
   }
 
   // Whole-loan-level INCLUSIVE day count (rule #2) and 15-day floor (rule #3).
+  // These are computed ONCE based on the entire loan duration.
   const totalChargeableDays = inclusiveDaysBetween(start, end);
   const needsFloor = totalChargeableDays < MIN_DAYS;
   const floorShortfall = needsFloor ? MIN_DAYS - totalChargeableDays : 0;
@@ -298,20 +299,13 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
     let remainderDays = rawRemainderDays;
     let minApplied = false;
 
-    // Apply minimum 15-day rule and inclusive day counting for the final segment
-    if (isFinal) {
-      // Calculate the actual inclusive days for this segment
-      // (wholeMonths * 30) gives the days from whole months
-      // remainderDays already includes inclusive days for the remainder portion
-      const actualInclusiveDays = wholeMonths * 30 + remainderDays;
-      
-      // For periods with no whole months, ensure we have at least the minimum days
-      if (actualInclusiveDays < MIN_DAYS) {
-        // Add the shortfall to reach MIN_DAYS
-        const shortfall = MIN_DAYS - actualInclusiveDays;
-        remainderDays += shortfall;
-        minApplied = true;
-      }
+    // Apply the 15-day minimum ONLY if the ENTIRE loan is under 15 days.
+    // This is a whole-loan rule, not a per-segment rule.
+    if (isFinal && needsFloor) {
+      // The floor shortfall should be applied to the final segment
+      // to bring the total loan to exactly MIN_DAYS.
+      remainderDays += floorShortfall;
+      minApplied = true;
     }
 
     const entry = buildEntry({
