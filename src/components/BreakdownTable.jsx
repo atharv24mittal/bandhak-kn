@@ -12,6 +12,22 @@ function eventBadge(entry, t) {
   return { text: t.eventFinal, cls: "bg-rule-red/10 text-rule-red border-rule-red/30" };
 }
 
+/**
+ * Render a segment's length as "X months Y days" (omitting whichever part
+ * is zero). Calculation is calendar-month based (see interestEngine.js),
+ * so this is the figure that actually explains the interest charged —
+ * showing raw elapsed calendar days here would be misleading whenever a
+ * short month (like February) gets folded into a full month's charge.
+ */
+function formatPeriod(entry, t) {
+  const parts = [];
+  if (entry.wholeMonths > 0) parts.push(`${formatInt(entry.wholeMonths)} ${t.monthsShort}`);
+  if (entry.remainderDays > 0 || entry.wholeMonths === 0) {
+    parts.push(`${formatInt(entry.remainderDays)} ${t.daysShort}`);
+  }
+  return parts.join(" ");
+}
+
 export default function BreakdownTable({ result }) {
   const { t, lang } = useLang();
   if (!result) return null;
@@ -45,7 +61,7 @@ export default function BreakdownTable({ result }) {
               <div className="grid grid-cols-2 gap-y-1.5 gap-x-3 text-sm">
                 <span className="text-ink-soft">{t.colDays}</span>
                 <span className="ledger-num text-right">
-                  {formatInt(entry.effectiveDays)}
+                  {formatPeriod(entry, t)}
                   {entry.minApplied && <span className="text-rule-red"> *</span>}
                 </span>
                 <span className="text-ink-soft">{t.colOpeningPrincipal}</span>
@@ -89,8 +105,8 @@ export default function BreakdownTable({ result }) {
                     {formatDateFriendly(entry.segmentStartDate, lang)}
                     <br />→ {formatDateFriendly(entry.segmentEndDate, lang)}
                   </td>
-                  <td className="py-2.5 pr-3 text-right ledger-num">
-                    {formatInt(entry.effectiveDays)}
+                  <td className="py-2.5 pr-3 text-right ledger-num whitespace-nowrap">
+                    {formatPeriod(entry, t)}
                     {entry.minApplied && <span className="text-rule-red" title={t.minDaysNote}> *</span>}
                   </td>
                   <td className="py-2.5 pr-3 text-right ledger-num">{formatNumber(entry.openingPrincipal)}</td>
