@@ -42,6 +42,7 @@ export const en = {
   minDaysNote: "Minimum 15-day interest rule applied",
   simpleInterestNote: "Simple interest mode — no yearly compounding applied",
   daysShort: "days",
+  monthsShort: "months",
 
   breakdownHeading: "Full Breakdown (review every segment)",
   colPeriod: "Period",
@@ -61,7 +62,7 @@ export const en = {
   // ── Info / help ──
   howItWorksTitle: "How this is calculated",
   howItWorksBody:
-    "Interest = Principal × Rate × Days ÷ 30 (a flat 30-day month). The minimum-15-day rule only matters if the whole loan period is under 15 days in total — in that case the entire loan is charged for 15 days. Once the loan runs 15 days or longer overall, every period is charged for its actual number of days, even if a particular gap between two payments happens to be very short. By default, if a loan runs for more than 365 days, the interest earned in each 365-day block is added to the principal before the next block begins (compounding) — choosing the \"Simple Interest\" rate option turns this off, so interest is always calculated on the same principal (minus any payments) with no yearly compounding, no matter how long the loan runs. In the EMI tracker, each payment first settles interest accrued so far, then reduces the principal — and (when compounding is on) restarts the 365-day compounding clock from that payment date.",
+    "Interest is calculated in whole calendar months, plus a daily rate for any leftover days. A \"month\" runs from the start (or last payment/compounding) date up to one day before the same date next month — e.g. starting 29 June, month 1 completes 28 July. Each completed month is charged the full flat monthly amount (Principal × Rate); leftover days beyond that are charged at the monthly amount ÷ 30 per day. The minimum-15-day rule only matters if the whole loan period is under 15 days in total — in that case the entire loan is charged for 15 days. By default, every 12 such calendar months, the interest earned in that block is added to the principal (compounding) — choosing the \"Simple Interest\" rate option turns this off, so interest is always calculated on the same principal (minus any payments) with no compounding, no matter how long the loan runs. In the EMI tracker, each payment first settles interest accrued so far, then reduces the principal — and (when compounding is on) restarts the 12-month compounding clock from that payment date. The \"Total Days\" figure shown in the results counts both the start and end date as part of the loan period.",
 
   errEndBeforeStart: "End date must be on or after the start date.",
   errInvalidPrincipal: "Please enter a valid principal amount greater than 0.",
