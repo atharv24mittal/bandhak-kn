@@ -298,10 +298,20 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
     let remainderDays = rawRemainderDays;
     let minApplied = false;
 
-    if (isFinal && needsFloor) {
-      // For final segment, add the floor shortfall if needed
-      remainderDays += floorShortfall;
-      minApplied = true;
+    // Apply minimum 15-day rule and inclusive day counting for the final segment
+    if (isFinal) {
+      // Calculate the actual inclusive days for this segment
+      // (wholeMonths * 30) gives the days from whole months
+      // remainderDays already includes inclusive days for the remainder portion
+      const actualInclusiveDays = wholeMonths * 30 + remainderDays;
+      
+      // For periods with no whole months, ensure we have at least the minimum days
+      if (actualInclusiveDays < MIN_DAYS) {
+        // Add the shortfall to reach MIN_DAYS
+        const shortfall = MIN_DAYS - actualInclusiveDays;
+        remainderDays += shortfall;
+        minApplied = true;
+      }
     }
 
     const entry = buildEntry({
