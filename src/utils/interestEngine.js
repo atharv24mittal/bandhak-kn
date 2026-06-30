@@ -2,31 +2,43 @@
 // Loan Interest Calculation Engine
 //
 // Rules implemented (per spec):
-//  1. Interest = principal × (monthlyRate / 100) × days / 30   (flat 30-day month)
+//  1. Interest is calculated in whole CALENDAR MONTHS plus a daily-rate
+//     remainder — not by simply prorating a daily rate over every elapsed
+//     day. A "month" completes on (start date + N calendar months − 1
+//     day): e.g. starting 29 June, month 1 completes 28 July, month 2
+//     completes 28 August. Each completed month is charged the full flat
+//     monthly amount (principal × rate%); any leftover days beyond the
+//     last completed month are charged at the daily rate
+//     (monthly amount ÷ 30). E.g. 29 June → 29 August = "2 months + 1
+//     day" = 2×(monthly amount) + 1×(daily rate).
 //  2. Minimum 15 days interest is a WHOLE-LOAN-level floor: it only ever
 //     matters when the entire loan (start date → final/as-of date) spans
-//     under 15 days in total. If the loan runs 15 days or longer overall,
-//     this floor never applies anywhere — no individual gap between two
-//     events (a payment, a compounding fold, etc.) ever gets padded on
-//     its own, no matter how short that particular gap is. When the floor
-//     does apply (whole loan < 15 days), it is applied exactly once, by
-//     extending the final segment so the total reaches 15 days.
-//  3. Every 365 days (from the loan start date, or from the most recent
-//     compounding fold or payment), the interest accrued over that block
-//     is folded into the principal ("compound interest after 1 year").
-//     The new, larger principal is used for every subsequent day's interest.
+//     under 15 days in total (in which case 0 whole months can ever have
+//     completed anyway). If the loan runs 15 days or longer overall, this
+//     floor never applies anywhere. When it does apply, it's applied once,
+//     by padding the final segment's day count up to 15.
+//  3. Compounding ("after 1 year"): every 12 calendar months (using the
+//     same "+N months − 1 day" rule, from the loan start date or the most
+//     recent compounding fold/payment), the interest accrued over that
+//     12-month block — always exactly 12 × the monthly amount, with zero
+//     remainder by construction — is folded into the principal. The new,
+//     larger principal is used for every subsequent day's interest.
 //  4. Partial payments (Mode 2 / EMI tracker) settle interest accrued up
-//     to the payment date, then reduce the principal by the payment
-//     amount, and restart the 365-day compounding clock from that date.
+//     to the payment date (using the same month+remainder rule), reduce
+//     the principal by the payment amount, and restart the 12-month
+//     compounding clock from that date.
+//  5. "Total Days" (returned for display only) is INCLUSIVE of both the
+//     start and end date (e.g. 3 Jul → 5 Jul = 3 days), since both
+//     endpoints are considered part of the loan period. This is purely a
+//     display figure — it is never used in any interest calculation.
 //
 // The engine produces a full chronological "timeline" of every accrual
 // segment (fold / payment / final) so the UI can show a complete,
-// auditable breakdown — exactly what was asked for ("mention everything
-// in summary to review", "mention the amount after each year").
+// auditable breakdown.
 // ─────────────────────────────────────────────────────────────────────────
 
 export const MIN_DAYS = 15;
-export const YEAR_DAYS = 365;
+export const YEAR_MONTHS = 12;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Normalize any Date/string to a UTC-midnight Date (avoids DST/timezone drift). */
@@ -51,6 +63,59 @@ export function dailyInterestAmount(principal, ratePercent) {
   return (principal * ratePercent) / 100 / 30;
 }
 
+/** Flat monthly interest amount for a given principal & monthly rate (%). */
+export function monthlyInterestAmount(principal, ratePercent) {
+  return (principal * ratePercent) / 100;
+}
+
+function lastDayOfUTCMonth(year, monthIndex) {
+  // Day 0 of "next month" is the last day of the target month.
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+/**
+ * Add N calendar months to a date, clamping the day-of-month if the
+ * target month is shorter (e.g. 31 Jan + 1 month → 28/29 Feb, not an
+ * overflowed early-March date).
+ */
+export function addCalendarMonths(date, n) {
+  const d = new Date(date);
+  const day = d.getUTCDate();
+  const totalMonthIndex = d.getUTCMonth() + n;
+  const year = d.getUTCFullYear() + Math.floor(totalMonthIndex / 12);
+  const monthIndex = ((totalMonthIndex % 12) + 12) % 12;
+  const clampedDay = Math.min(day, lastDayOfUTCMonth(year, monthIndex));
+  return new Date(Date.UTC(year, monthIndex, clampedDay));
+}
+
+/**
+ * The date on which month N (counting from `anchor`) completes.
+ * Month 0 is the anchor date itself (0 months elapsed yet).
+ * Month N (N >= 1) completes on (anchor + N calendar months − 1 day) —
+ * e.g. anchor = 29 June → month 1 completes 28 July, month 2 completes
+ * 28 August, month 12 completes the following 28 June (or 27 June across
+ * a leap day, exactly mirroring the original "after 2 July" example).
+ */
+export function monthMark(anchor, n) {
+  if (n === 0) return new Date(anchor);
+  return addDays(addCalendarMonths(anchor, n), -1);
+}
+
+/**
+ * Split the span [A, B] into whole calendar months (per monthMark above)
+ * plus a leftover remainder in days.
+ * @returns {{wholeMonths: number, remainderDays: number}}
+ */
+export function monthsAndRemainder(A, B) {
+  let n = 0;
+  while (monthMark(A, n + 1).getTime() <= B.getTime()) {
+    n++;
+  }
+  const mark = monthMark(A, n);
+  const remainderDays = daysBetween(mark, B);
+  return { wholeMonths: n, remainderDays };
+}
+
 /**
  * Run the full simulation.
  *
@@ -61,7 +126,7 @@ export function dailyInterestAmount(principal, ratePercent) {
  * @param {number} params.ratePercent       - monthly rate, e.g. 2.25
  * @param {Array<{date:Date|string, amount:number}>} [params.payments] - Mode 2 only
  * @param {boolean} [params.compounding=true] - false = simple interest only,
- *   never folds accrued interest into principal after 365 days.
+ *   never folds accrued interest into principal after 12 months.
  *
  * @returns {{
  *   timeline: Array<Object>,
@@ -88,12 +153,12 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
     .map((p) => ({ date: toMidnight(p.date), amount: Number(p.amount) }))
     .sort((a, b) => a.date - b.date);
 
-  // Whole-loan-level 15-day floor check (see rule #2 above). Computed once,
-  // up front, against the actual total span of the loan — never against
-  // any individual sub-segment.
-  const totalDaysRaw = daysBetween(start, end);
-  const needsFloor = totalDaysRaw > 0 && totalDaysRaw < MIN_DAYS;
-  const floorShortfall = needsFloor ? MIN_DAYS - totalDaysRaw : 0;
+  // Whole-loan-level 15-day floor check. Uses the plain exclusive day
+  // difference internally (never the inclusive display figure below) so
+  // every interest calculation stays exact and self-consistent.
+  const totalDaysExclusive = daysBetween(start, end);
+  const needsFloor = totalDaysExclusive > 0 && totalDaysExclusive < MIN_DAYS;
+  const floorShortfall = needsFloor ? MIN_DAYS - totalDaysExclusive : 0;
 
   let currentPrincipal = origPrincipal;
   let segmentStart = start;
@@ -111,8 +176,8 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
     // Simple-interest mode (compounding = false) never produces a fold
     // boundary at all — interest just keeps accruing on whatever the
     // current principal is (which can still drop from payments), all the
-    // way through, with no yearly fold-into-principal step.
-    const nextFold = compounding ? addDays(yearAnchor, YEAR_DAYS) : null;
+    // way through, with no 12-month fold-into-principal step.
+    const nextFold = compounding ? monthMark(yearAnchor, YEAR_MONTHS) : null;
     const nextPayment = paymentIdx < sortedPayments.length ? sortedPayments[paymentIdx].date : null;
 
     // Candidate boundary dates strictly after segmentStart, capped at `end`.
@@ -129,18 +194,28 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
 
     const rawDays = daysBetween(segmentStart, nextDate);
 
-    // The 15-day floor, if it applies at all (whole loan < 15 days), is
-    // added entirely to the FINAL segment so the loan's total comes out
-    // to exactly 15 days. Every other segment — and every segment at all,
-    // when the loan runs 15+ days overall — just uses its own real days.
-    let effectiveDays = rawDays;
+    // Calculation basis: whole calendar months (at the flat monthly
+    // amount) plus a daily-rate remainder. A fold segment always comes
+    // out to exactly { wholeMonths: 12, remainderDays: 0 } by
+    // construction, since nextFold IS monthMark(yearAnchor, 12).
+    const { wholeMonths, remainderDays: rawRemainderDays } = monthsAndRemainder(segmentStart, nextDate);
+    let remainderDays = rawRemainderDays;
     let minApplied = false;
+
+    // The 15-day floor, if it applies at all (whole loan < 15 days), is
+    // added entirely to the FINAL segment's remainder so the loan's total
+    // comes out to exactly 15 days. (wholeMonths is guaranteed 0 here,
+    // since under-15-days can never contain a completed month.)
     if (needsFloor && isFinal) {
-      effectiveDays = rawDays + floorShortfall;
+      remainderDays = rawRemainderDays + floorShortfall;
       minApplied = true;
     }
 
-    const interest = currentPrincipal * (ratePercent / 100) * (effectiveDays / 30);
+    const monthlyAmount = monthlyInterestAmount(currentPrincipal, ratePercent);
+    const dailyAmount = monthlyAmount / 30;
+    const interest = monthlyAmount * wholeMonths + dailyAmount * remainderDays;
+    const effectiveDays = wholeMonths * 30 + remainderDays; // days-equivalent actually charged
+
     const openingPrincipal = currentPrincipal;
     const closingBeforeAdjustment = openingPrincipal + interest;
 
@@ -152,12 +227,15 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
       type, // 'fold' | 'payment' | 'final'
       segmentStartDate: new Date(segmentStart),
       segmentEndDate: new Date(nextDate),
-      rawDays,
-      effectiveDays,
+      rawDays, // true calendar days elapsed in this segment
+      wholeMonths,
+      remainderDays,
+      effectiveDays, // wholeMonths*30 + remainderDays (the calculation basis, as a days-equivalent)
       minApplied,
       openingPrincipal,
       ratePercent,
-      dailyInterestAtStart: dailyInterestAmount(openingPrincipal, ratePercent),
+      dailyInterestAtStart: dailyAmount,
+      monthlyInterestAtStart: monthlyAmount,
       interest,
       amountBeforeAdjustment: closingBeforeAdjustment,
       paymentAmount: isPayment ? sortedPayments[paymentIdx].amount : 0,
@@ -197,7 +275,9 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
     totalInterest,
     totalPaid,
     originalPrincipal: origPrincipal,
-    totalDaysRaw,
+    // Inclusive of both the start and end date, for display only — never
+    // used internally for any interest calculation (see rule #5 above).
+    totalDaysRaw: totalDaysExclusive + 1,
     startDate: start,
     endDate: end,
   };
