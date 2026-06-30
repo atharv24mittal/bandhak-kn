@@ -106,25 +106,65 @@ export function inclusiveDaysBetween(d1, d2) {
 }
 
 /**
- * Split the span [A, B] (inclusive) into whole calendar months (per monthMark above)
- * plus a leftover remainder in days.
- * @returns {{wholeMonths: number, remainderDays: number}}
+ * Split an inclusive period [startDate, endDate] into whole calendar months
+ * plus a remainder in days.
+ * 
+ * Examples:
+ * - 1 Jun → 30 Jun     = { wholeMonths: 1, remainderDays: 0 }
+ * - 29 Jun → 28 Jul    = { wholeMonths: 1, remainderDays: 0 }
+ * - 1 Jun → 15 Jun     = { wholeMonths: 0, remainderDays: 15 }
+ * - 3 Jul → 5 Jul      = { wholeMonths: 0, remainderDays: 3 }
+ * - 1 Jun → 31 May     = { wholeMonths: 12, remainderDays: 0 }
+ * - 1 Jun → 15 Jul     = { wholeMonths: 1, remainderDays: 15 }
+ * 
+ * This matches how banks and pawn brokers typically calculate calendar-month interest.
  */
-export function monthsAndRemainderInclusive(A, B) {
-  // B is inclusive, so we need to work with the exclusive end for calculation
-  const exclusiveEnd = addDays(B, 1);
-  let n = 0;
-  while (monthMark(A, n + 1).getTime() < exclusiveEnd.getTime()) {
-    n++;
+export function monthsAndRemainderInclusive(startDate, endDate) {
+  const start = toMidnight(startDate);
+  const end = toMidnight(endDate);
+  
+  // If start and end are the same day, it's 0 months and 1 day (inclusive)
+  if (start.getTime() === end.getTime()) {
+    return { wholeMonths: 0, remainderDays: 1 };
   }
-  const mark = monthMark(A, n);
-  const remainderDays = inclusiveDaysBetween(mark, B);
-  // If remainderDays equals the full month's days (30), it should be a whole month
-  // But we handle this by ensuring we don't count a full month as remainder
-  const adjustedRemainder = remainderDays >= 30 ? 0 : remainderDays;
-  // If we had a full month as remainder, increment wholeMonths
-  const adjustedWholeMonths = n + (remainderDays >= 30 ? 1 : 0);
-  return { wholeMonths: adjustedWholeMonths, remainderDays: adjustedRemainder };
+  
+  // Find the maximum number of whole months we can fit
+  let wholeMonths = 0;
+  let monthEnd = monthMark(start, 1);
+  
+  // A month is complete if the month end date is <= the period end date
+  while (monthEnd.getTime() <= end.getTime()) {
+    wholeMonths++;
+    monthEnd = monthMark(start, wholeMonths + 1);
+  }
+  
+  // Calculate the remainder days
+  // The remainder starts from the day after the last completed month
+  const lastMonthEnd = monthMark(start, wholeMonths);
+  const remainderStart = addDays(lastMonthEnd, 1);
+  
+  // If there are no days remaining, remainderDays is 0
+  if (remainderStart.getTime() > end.getTime()) {
+    return { wholeMonths, remainderDays: 0 };
+  }
+  
+  // Calculate inclusive days from remainderStart to end
+  const remainderDays = inclusiveDaysBetween(remainderStart, end);
+  
+  // Handle edge case: if remainderDays is 30 or more, it should be a whole month
+  // But this shouldn't happen with our monthMark calculation
+  if (remainderDays >= 30) {
+    // This is a safety net - if we have 30+ days, it means our month calculation was off
+    // Just convert it to months
+    const extraMonths = Math.floor(remainderDays / 30);
+    const extraDays = remainderDays % 30;
+    return { 
+      wholeMonths: wholeMonths + extraMonths, 
+      remainderDays: extraDays 
+    };
+  }
+  
+  return { wholeMonths, remainderDays };
 }
 
 function buildEntry({ type, segmentStart, segmentEnd, wholeMonths, remainderDays, minApplied, openingPrincipal, ratePercent, paymentAmount }) {
@@ -243,8 +283,8 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
 
     // Candidate boundary dates strictly after segmentStart, capped at `end`.
     const candidates = [end];
-    if (nextFold && nextFold > segmentStart && nextFold <= end) candidates.push(nextFold);
-    if (nextPayment && nextPayment > segmentStart && nextPayment <= end) candidates.push(nextPayment);
+    if (nextFold && nextFold >= segmentStart && nextFold <= end) candidates.push(nextFold);
+    if (nextPayment && nextPayment >= segmentStart && nextPayment <= end) candidates.push(nextPayment);
 
     const segmentEndMs = Math.min(...candidates.map((d) => d.getTime()));
     const segmentEnd = new Date(segmentEndMs);
