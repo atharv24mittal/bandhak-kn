@@ -1,7 +1,6 @@
 import { useLang } from "../i18n/LanguageContext";
 import { formatCurrency, formatNumber, formatInt } from "../utils/numberUtils";
 import { formatDateFriendly } from "../utils/dateUtils";
-import { addDays } from "../utils/interestEngine";
 
 function eventBadge(entry, t) {
   if (entry.type === "fold") {
@@ -29,20 +28,6 @@ function formatPeriod(entry, t) {
   return parts.join(" ");
 }
 
-/**
- * The engine's internal segmentStartDate for any row after the first is
- * the exact same calendar date as the PREVIOUS row's segmentEndDate (it's
- * the shared boundary instant where a fold or payment occurs — no day is
- * actually double-charged in the math, see interestEngine.js rule #2).
- * Showing that same date twice in a row reads as an overlap, so for
- * display purposes only, every row after the first is labeled starting
- * the day AFTER the previous row's end date. This does not change any
- * calculation — wholeMonths/remainderDays/interest are untouched.
- */
-function displayStartDate(entry, isFirstRow) {
-  return isFirstRow ? entry.segmentStartDate : addDays(entry.segmentStartDate, 1);
-}
-
 export default function BreakdownTable({ result }) {
   const { t, lang } = useLang();
   if (!result) return null;
@@ -50,9 +35,13 @@ export default function BreakdownTable({ result }) {
   // Precompute each fold's year number once (mobile and desktop blocks both
   // render from this same array, so the counter can't double-increment).
   let yearCounter = 0;
-  const rows = result.timeline.map((entry, i) => {
+  const rows = result.timeline.map((entry) => {
     if (entry.type === "fold") yearCounter += 1;
-    return { entry, yearNumber: yearCounter, displayStart: displayStartDate(entry, i === 0) };
+    return {
+      entry,
+      yearNumber: yearCounter,
+      displayStart: entry.segmentStartDate,
+    };
   });
 
   return (
