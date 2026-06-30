@@ -1,6 +1,7 @@
 import { useLang } from "../i18n/LanguageContext";
 import { formatCurrency, formatNumber, formatInt } from "../utils/numberUtils";
 import { formatDateFriendly } from "../utils/dateUtils";
+import { addDays } from "../utils/interestEngine";
 
 function eventBadge(entry, t) {
   if (entry.type === "fold") {
@@ -28,6 +29,20 @@ function formatPeriod(entry, t) {
   return parts.join(" ");
 }
 
+/**
+ * The engine's internal segmentStartDate for any row after the first is
+ * the exact same calendar date as the PREVIOUS row's segmentEndDate (it's
+ * the shared boundary instant where a fold or payment occurs — no day is
+ * actually double-charged in the math, see interestEngine.js rule #2).
+ * Showing that same date twice in a row reads as an overlap, so for
+ * display purposes only, every row after the first is labeled starting
+ * the day AFTER the previous row's end date. This does not change any
+ * calculation — wholeMonths/remainderDays/interest are untouched.
+ */
+function displayStartDate(entry, isFirstRow) {
+  return isFirstRow ? entry.segmentStartDate : addDays(entry.segmentStartDate, 1);
+}
+
 export default function BreakdownTable({ result }) {
   const { t, lang } = useLang();
   if (!result) return null;
@@ -35,9 +50,9 @@ export default function BreakdownTable({ result }) {
   // Precompute each fold's year number once (mobile and desktop blocks both
   // render from this same array, so the counter can't double-increment).
   let yearCounter = 0;
-  const rows = result.timeline.map((entry) => {
+  const rows = result.timeline.map((entry, i) => {
     if (entry.type === "fold") yearCounter += 1;
-    return { entry, yearNumber: yearCounter };
+    return { entry, yearNumber: yearCounter, displayStart: displayStartDate(entry, i === 0) };
   });
 
   return (
@@ -46,13 +61,13 @@ export default function BreakdownTable({ result }) {
 
       {/* Mobile: stacked cards. Desktop: table. */}
       <div className="mt-3 space-y-3 sm:hidden">
-        {rows.map(({ entry, yearNumber }, i) => {
+        {rows.map(({ entry, yearNumber, displayStart }, i) => {
           const badge = eventBadge(entry, t);
           return (
             <div key={i} className="rounded-xl border border-ink-soft/15 p-3.5 bg-paper">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-medium text-ink-soft">
-                  {formatDateFriendly(entry.segmentStartDate, lang)} → {formatDateFriendly(entry.segmentEndDate, lang)}
+                  {formatDateFriendly(displayStart, lang)} → {formatDateFriendly(entry.segmentEndDate, lang)}
                 </span>
                 <span className={`text-[0.65rem] font-semibold px-2 py-0.5 rounded-full border ${badge.cls}`}>
                   {entry.type === "fold" ? `${t.yearEndLabel} ${yearNumber}` : badge.text}
@@ -97,12 +112,12 @@ export default function BreakdownTable({ result }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ entry, yearNumber }, i) => {
+            {rows.map(({ entry, yearNumber, displayStart }, i) => {
               const badge = eventBadge(entry, t);
               return (
                 <tr key={i} className="border-b border-rule-blue/25 align-top hover:bg-rule-red/[0.03]">
                   <td className="py-2.5 pr-3 whitespace-nowrap text-ink-soft">
-                    {formatDateFriendly(entry.segmentStartDate, lang)}
+                    {formatDateFriendly(displayStart, lang)}
                     <br />→ {formatDateFriendly(entry.segmentEndDate, lang)}
                   </td>
                   <td className="py-2.5 pr-3 text-right ledger-num whitespace-nowrap">
