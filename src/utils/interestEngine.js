@@ -8,11 +8,11 @@
 //     completed month is charged the full flat monthly amount
 //     (principal × rate%); leftover days beyond the last completed month
 //     are charged at the daily rate (monthly amount ÷ 30).
-//  2. INCLUSIVE day counting: both the start date and the end date of each
-//     segment are counted as chargeable days (e.g. 3 Jul → 5 Jul = 3 days,
-//     2 Jun → 30 Jun = 29 days). For internal boundaries (between segments),
-//     the next segment starts the day AFTER the previous segment ends,
-//     resulting in clean, non-overlapping periods (bank statement style).
+//  2. INCLUSIVE day counting is applied natively at the segment level.
+//     Each segment is defined as [startDate, endDate] inclusive. For
+//     non-final segments (folds and payments), the next segment starts
+//     on the day AFTER the previous segment ends. This creates clean,
+//     non-overlapping periods like a bank statement.
 //  3. Minimum 15 days interest is a WHOLE-LOAN-level floor: it only ever
 //     matters when the entire loan's INCLUSIVE day count is under 15. If
 //     so, the shortfall is added to the final segment so the loan's total
@@ -31,9 +31,8 @@
 //
 // The engine produces a full chronological "timeline" of every accrual
 // segment (fold / payment / final) so the UI can show a complete,
-// auditable breakdown. Each segment's start date is the day AFTER the
-// previous segment's end date (bank statement style), ensuring clean,
-// non-overlapping periods.
+// auditable breakdown. Each segment uses inclusive day counting natively,
+// with non-overlapping periods (bank statement style).
 // ─────────────────────────────────────────────────────────────────────────
 
 export const MIN_DAYS = 15;
@@ -100,21 +99,35 @@ export function monthMark(anchor, n) {
 }
 
 /**
- * Split the span [A, B] into whole calendar months (per monthMark above)
+ * Calculate the inclusive days between two dates (including both start and end).
+ */
+export function inclusiveDaysBetween(d1, d2) {
+  return daysBetween(d1, d2) + 1;
+}
+
+/**
+ * Split the span [A, B] (inclusive) into whole calendar months (per monthMark above)
  * plus a leftover remainder in days.
  * @returns {{wholeMonths: number, remainderDays: number}}
  */
-export function monthsAndRemainder(A, B) {
+export function monthsAndRemainderInclusive(A, B) {
+  // B is inclusive, so we need to work with the exclusive end for calculation
+  const exclusiveEnd = addDays(B, 1);
   let n = 0;
-  while (monthMark(A, n + 1).getTime() <= B.getTime()) {
+  while (monthMark(A, n + 1).getTime() < exclusiveEnd.getTime()) {
     n++;
   }
   const mark = monthMark(A, n);
-  const remainderDays = daysBetween(mark, B);
-  return { wholeMonths: n, remainderDays };
+  const remainderDays = inclusiveDaysBetween(mark, B);
+  // If remainderDays equals the full month's days (30), it should be a whole month
+  // But we handle this by ensuring we don't count a full month as remainder
+  const adjustedRemainder = remainderDays >= 30 ? 0 : remainderDays;
+  // If we had a full month as remainder, increment wholeMonths
+  const adjustedWholeMonths = n + (remainderDays >= 30 ? 1 : 0);
+  return { wholeMonths: adjustedWholeMonths, remainderDays: adjustedRemainder };
 }
 
-function buildEntry({ type, segmentStart, nextDate, wholeMonths, remainderDays, minApplied, openingPrincipal, ratePercent, paymentAmount }) {
+function buildEntry({ type, segmentStart, segmentEnd, wholeMonths, remainderDays, minApplied, openingPrincipal, ratePercent, paymentAmount }) {
   const monthlyAmount = monthlyInterestAmount(openingPrincipal, ratePercent);
   const dailyAmount = monthlyAmount / 30;
   const interest = monthlyAmount * wholeMonths + dailyAmount * remainderDays;
@@ -122,8 +135,8 @@ function buildEntry({ type, segmentStart, nextDate, wholeMonths, remainderDays, 
   return {
     type,
     segmentStartDate: new Date(segmentStart),
-    segmentEndDate: new Date(nextDate),
-    rawDays: daysBetween(segmentStart, nextDate),
+    segmentEndDate: new Date(segmentEnd),
+    rawDays: inclusiveDaysBetween(segmentStart, segmentEnd),
     wholeMonths,
     remainderDays,
     effectiveDays: wholeMonths * 30 + remainderDays,
@@ -172,21 +185,20 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
   }
 
   // Whole-loan-level INCLUSIVE day count (rule #2) and 15-day floor (rule #3).
-  const totalDaysExclusive = daysBetween(start, end);
-  const totalChargeableDays = totalDaysExclusive + 1;
+  const totalChargeableDays = inclusiveDaysBetween(start, end);
   const needsFloor = totalChargeableDays < MIN_DAYS;
   const floorShortfall = needsFloor ? MIN_DAYS - totalChargeableDays : 0;
 
   // Degenerate same-day loan (start === end): the main loop below can
   // never execute (it requires segmentStart < end), but the floor still
   // applies in full ("even for 1 day, minimum 15 days").
-  if (totalDaysExclusive === 0) {
+  if (totalChargeableDays === 1) {
     const entry = buildEntry({
       type: "final",
       segmentStart: start,
-      nextDate: end,
+      segmentEnd: end,
       wholeMonths: 0,
-      remainderDays: MIN_DAYS, // 0 raw + 1 inclusive + 14 floor shortfall
+      remainderDays: MIN_DAYS, // 1 inclusive + 14 floor shortfall
       minApplied: true,
       openingPrincipal: origPrincipal,
       ratePercent,
@@ -231,38 +243,31 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
 
     // Candidate boundary dates strictly after segmentStart, capped at `end`.
     const candidates = [end];
-    if (nextFold && nextFold > segmentStart && nextFold < end) candidates.push(nextFold);
+    if (nextFold && nextFold > segmentStart && nextFold <= end) candidates.push(nextFold);
     if (nextPayment && nextPayment > segmentStart && nextPayment <= end) candidates.push(nextPayment);
 
-    const nextDateMs = Math.min(...candidates.map((d) => d.getTime()));
-    const nextDate = new Date(nextDateMs);
+    const segmentEndMs = Math.min(...candidates.map((d) => d.getTime()));
+    const segmentEnd = new Date(segmentEndMs);
 
-    const isFold = !!nextFold && nextFold.getTime() === nextDateMs;
-    const isPayment = !isFold && nextPayment && nextPayment.getTime() === nextDateMs;
-    const isFinal = nextDate.getTime() === end.getTime();
+    const isFold = !!nextFold && nextFold.getTime() === segmentEndMs;
+    const isPayment = !isFold && nextPayment && nextPayment.getTime() === segmentEndMs;
+    const isFinal = segmentEnd.getTime() === end.getTime();
 
-    // Calculation basis: whole calendar months (at the flat monthly
-    // amount) plus a daily-rate remainder. A fold segment always comes
-    // out to exactly { wholeMonths: 12, remainderDays: 0 } by
-    // construction, since nextFold IS monthMark(yearAnchor, 12).
-    const { wholeMonths, remainderDays: rawRemainderDays } = monthsAndRemainder(segmentStart, nextDate);
+    // Calculate whole months and remainder days using inclusive counting
+    const { wholeMonths, remainderDays: rawRemainderDays } = monthsAndRemainderInclusive(segmentStart, segmentEnd);
     let remainderDays = rawRemainderDays;
     let minApplied = false;
 
-    if (isFinal) {
-      // Final row is always inclusive.
-      remainderDays += 1;
-
-      if (needsFloor) {
-        remainderDays += floorShortfall;
-        minApplied = true;
-      }
+    if (isFinal && needsFloor) {
+      // For final segment, add the floor shortfall if needed
+      remainderDays += floorShortfall;
+      minApplied = true;
     }
 
     const entry = buildEntry({
       type: isFold ? "fold" : isPayment ? "payment" : "final",
       segmentStart,
-      nextDate,
+      segmentEnd,
       wholeMonths,
       remainderDays,
       minApplied,
@@ -275,19 +280,19 @@ export function calculateLoan({ startDate, endDate, principal, ratePercent, paym
 
     if (isFold) {
       currentPrincipal = entry.closingPrincipal;
-      yearAnchor = addDays(nextDate, 1);
-      segmentStart = addDays(nextDate, 1);
+      yearAnchor = addDays(segmentEnd, 1);
+      segmentStart = addDays(segmentEnd, 1);
     } else if (isPayment) {
       const pay = sortedPayments[paymentIdx];
       currentPrincipal = entry.closingPrincipal - pay.amount;
       entry.closingPrincipal = currentPrincipal;
       totalPaid += pay.amount;
-      segmentStart = addDays(nextDate, 1);
-      yearAnchor = addDays(nextDate, 1);
+      segmentStart = addDays(segmentEnd, 1);
+      yearAnchor = addDays(segmentEnd, 1);
       paymentIdx++;
     } else {
       currentPrincipal = entry.closingPrincipal;
-      segmentStart = nextDate;
+      segmentStart = addDays(segmentEnd, 1); // For final, this will exceed end and exit loop
     }
 
     timeline.push(entry);
