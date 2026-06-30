@@ -116,6 +116,7 @@ export function inclusiveDaysBetween(d1, d2) {
  * - 3 Jul → 5 Jul      = { wholeMonths: 0, remainderDays: 3 }
  * - 1 Jun → 31 May     = { wholeMonths: 12, remainderDays: 0 }
  * - 1 Jun → 15 Jul     = { wholeMonths: 1, remainderDays: 15 }
+ * - 21 Jun → 30 Jun    = { wholeMonths: 0, remainderDays: 10 }
  * 
  * This matches how banks and pawn brokers typically calculate calendar-month interest.
  */
@@ -138,10 +139,15 @@ export function monthsAndRemainderInclusive(startDate, endDate) {
     monthEnd = monthMark(start, wholeMonths + 1);
   }
   
-  // Calculate the remainder days
-  // The remainder starts from the day after the last completed month
-  const lastMonthEnd = monthMark(start, wholeMonths);
-  const remainderStart = addDays(lastMonthEnd, 1);
+  // If we have whole months, the remainder starts from the day after the last completed month
+  // If we have no whole months, the remainder starts from the start date
+  let remainderStart;
+  if (wholeMonths > 0) {
+    const lastMonthEnd = monthMark(start, wholeMonths);
+    remainderStart = addDays(lastMonthEnd, 1);
+  } else {
+    remainderStart = start;
+  }
   
   // If there are no days remaining, remainderDays is 0
   if (remainderStart.getTime() > end.getTime()) {
@@ -150,19 +156,6 @@ export function monthsAndRemainderInclusive(startDate, endDate) {
   
   // Calculate inclusive days from remainderStart to end
   const remainderDays = inclusiveDaysBetween(remainderStart, end);
-  
-  // Handle edge case: if remainderDays is 30 or more, it should be a whole month
-  // But this shouldn't happen with our monthMark calculation
-  if (remainderDays >= 30) {
-    // This is a safety net - if we have 30+ days, it means our month calculation was off
-    // Just convert it to months
-    const extraMonths = Math.floor(remainderDays / 30);
-    const extraDays = remainderDays % 30;
-    return { 
-      wholeMonths: wholeMonths + extraMonths, 
-      remainderDays: extraDays 
-    };
-  }
   
   return { wholeMonths, remainderDays };
 }
